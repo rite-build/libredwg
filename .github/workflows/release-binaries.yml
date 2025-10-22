@@ -51,14 +51,52 @@ jobs:
         run: |
           brew install autoconf automake libtool texinfo
 
-      - name: Build
+      - name: Configure
         run: |
           sh ./autogen.sh
           ./configure --enable-release --disable-docs --disable-bindings
+
+      - name: Compile
+        run: |
           make -j$(nproc)
+
+      - name: Install to staging
+        run: |
           make install DESTDIR=$PWD/install-root
           mv install-root libredwg-${{ inputs.version }}-${{ matrix.platform }}
+
+      - name: Fix RPATH (macOS)
+        if: matrix.platform == 'macos-aarch64'
+        run: |
+          cd libredwg-${{ inputs.version }}-${{ matrix.platform }}/usr/local
+          for bin in bin/*; do
+            if [ -f "$bin" ] && [ -x "$bin" ]; then
+              install_name_tool -add_rpath @executable_path/../lib "$bin" 2>/dev/null || true
+              install_name_tool -change /usr/local/lib/libredwg.0.dylib @rpath/libredwg.0.dylib "$bin" 2>/dev/null || true
+            fi
+          done
+
+      - name: Fix RPATH (Linux)
+        if: matrix.platform == 'linux-aarch64'
+        run: |
+          sudo apt-get install -y patchelf
+          cd libredwg-${{ inputs.version }}-${{ matrix.platform }}/usr/local
+          for bin in bin/*; do
+            if [ -f "$bin" ] && [ -x "$bin" ]; then
+              patchelf --set-rpath '$ORIGIN/../lib' "$bin" 2>/dev/null || true
+            fi
+          done
+
+      - name: Create tarball
+        run: |
           tar -czf libredwg-${{ inputs.version }}-${{ matrix.platform }}.tar.gz libredwg-${{ inputs.version }}-${{ matrix.platform }}
+
+      - name: Generate install script
+        run: |
+          sed -e 's/VERSION_PLACEHOLDER/${{ inputs.version }}/g' \
+              -e 's/PLATFORM_PLACEHOLDER/${{ matrix.platform }}/g' \
+              .github/install-template.sh > install-${{ matrix.platform }}.sh
+          chmod +x install-${{ matrix.platform }}.sh
 
       - name: Generate checksum
         run: |
@@ -71,6 +109,7 @@ jobs:
           path: |
             libredwg-${{ inputs.version }}-${{ matrix.platform }}.tar.gz
             libredwg-${{ inputs.version }}-${{ matrix.platform }}.tar.gz.sha256
+            install-${{ matrix.platform }}.sh
           retention-days: 90
 
       - name: Create release
@@ -81,9 +120,29 @@ jobs:
           body: |
             Prebuilt binaries for AArch64 (ARM64) platforms.
 
-            Upstream: https://github.com/rite-build/libredwg/releases/tag/${{ inputs.version }}
+            ## Quick Install
+
+            **Linux AArch64:**
+            ```bash
+            curl -fsSL https://github.com/rite-build/libredwg/releases/download/${{ inputs.version }}/install-linux-aarch64.sh | sh
+            ```
+
+            **macOS AArch64:**
+            ```bash
+            curl -fsSL https://github.com/rite-build/libredwg/releases/download/${{ inputs.version }}/install-macos-aarch64.sh | sh
+            ```
+
+            Or download manually and install with custom prefix:
+            ```bash
+            ./install-linux-aarch64.sh --prefix /custom/path
+            ./install-macos-aarch64.sh --system  # installs to /usr/local
+            ```
+
+            ## Upstream
+            https://github.com/LibreDWG/libredwg/releases/tag/${{ inputs.version }}
           files: |
             libredwg-${{ inputs.version }}-${{ matrix.platform }}.tar.gz
             libredwg-${{ inputs.version }}-${{ matrix.platform }}.tar.gz.sha256
+            install-${{ matrix.platform }}.sh
           draft: false
           prerelease: false
